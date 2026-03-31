@@ -44,6 +44,59 @@ pub struct StatisticsRow {
     pub(crate) max_value: ScalarValue,
 }
 
+trait ToScalarValue: ArrowPrimitiveType {
+    fn to_scalar_value(value: Self::Native, data_type: &DataType) -> ScalarValue;
+}
+
+macro_rules! impl_scalar_value {
+    ($arrow_ty:ty, $variant:ident) => {
+        impl ToScalarValue for $arrow_ty {
+            fn to_scalar_value(value: Self::Native, _data_type: &DataType) -> ScalarValue {
+                ScalarValue::$variant(Some(value))
+            }
+        }
+    };
+}
+
+macro_rules! impl_timestamp_scalar_value {
+    ($arrow_ty:ty, $unit:ident, $variant:ident) => {
+        impl ToScalarValue for $arrow_ty {
+            fn to_scalar_value(value: Self::Native, data_type: &DataType) -> ScalarValue {
+                let tz = match data_type {
+                    DataType::Timestamp(TimeUnit::$unit, tz) => {
+                        tz.as_ref().map(|tz| Arc::<str>::from(tz.as_ref()))
+                    }
+                    _ => None,
+                };
+                ScalarValue::$variant(Some(value), tz)
+            }
+        }
+    };
+}
+
+impl_scalar_value!(Int8Type, Int8);
+impl_scalar_value!(UInt8Type, UInt8);
+impl_scalar_value!(Int16Type, Int16);
+impl_scalar_value!(UInt16Type, UInt16);
+impl_scalar_value!(Int32Type, Int32);
+impl_scalar_value!(UInt32Type, UInt32);
+impl_scalar_value!(Int64Type, Int64);
+impl_scalar_value!(UInt64Type, UInt64);
+impl_scalar_value!(Date32Type, Date32);
+impl_scalar_value!(Date64Type, Date64);
+impl_scalar_value!(Time32SecondType, Time32Second);
+impl_scalar_value!(Time32MillisecondType, Time32Millisecond);
+impl_scalar_value!(Time64MicrosecondType, Time64Microsecond);
+impl_scalar_value!(Time64NanosecondType, Time64Nanosecond);
+impl_scalar_value!(DurationSecondType, DurationSecond);
+impl_scalar_value!(DurationMillisecondType, DurationMillisecond);
+impl_scalar_value!(DurationMicrosecondType, DurationMicrosecond);
+impl_scalar_value!(DurationNanosecondType, DurationNanosecond);
+impl_timestamp_scalar_value!(TimestampSecondType, Second, TimestampSecond);
+impl_timestamp_scalar_value!(TimestampMillisecondType, Millisecond, TimestampMillisecond);
+impl_timestamp_scalar_value!(TimestampMicrosecondType, Microsecond, TimestampMicrosecond);
+impl_timestamp_scalar_value!(TimestampNanosecondType, Nanosecond, TimestampNanosecond);
+
 fn compute_primitive_statistics<T: ArrowNumericType>(
     arrays: &[&ArrayRef],
 ) -> (T::Native, T::Native, i64)
@@ -81,10 +134,9 @@ where
     (min_value, max_value, null_count)
 }
 
-fn get_statistics<T: ArrowNumericType>(arrays: &[&ArrayRef]) -> StatisticsRow
+fn get_statistics<T: ArrowNumericType + ToScalarValue>(arrays: &[&ArrayRef]) -> StatisticsRow
 where
     T::Native: Bounded,
-    datafusion_common::scalar::ScalarValue: From<<T as ArrowPrimitiveType>::Native>,
 {
     debug_assert!(!arrays.is_empty());
     // Note: we take data_type off of arrays instead of using T::DATA_TYPE because
@@ -93,8 +145,8 @@ where
     let (min_value, max_value, null_count) = compute_primitive_statistics::<T>(arrays);
     StatisticsRow {
         null_count,
-        min_value: ScalarValue::new_primitive::<T>(Some(min_value), arrays[0].data_type()).unwrap(),
-        max_value: ScalarValue::new_primitive::<T>(Some(max_value), arrays[0].data_type()).unwrap(),
+        min_value: T::to_scalar_value(min_value, arrays[0].data_type()),
+        max_value: T::to_scalar_value(max_value, arrays[0].data_type()),
     }
 }
 
@@ -2067,26 +2119,16 @@ mod tests {
         runner.run(&results, |(subset, stats)| {
             // Assert min is <= all values
             prop_assert!(subset.iter().all(|val| val.is_nan()
-                || stats.min_value
-                    <= ScalarValue::new_primitive::<F>(Some(*val), &F::DATA_TYPE).unwrap()));
+                || stats.min_value <= ScalarValue::from(*val)));
 
             // Assert max is >= all values
             prop_assert!(subset.iter().all(|val| val.is_nan()
-                || stats.max_value
-                    >= ScalarValue::new_primitive::<F>(Some(*val), &F::DATA_TYPE).unwrap()));
+                || stats.max_value >= ScalarValue::from(*val)));
 
             // If array is empty, assert min and max are -inf, +inf, respectively
             if subset.is_empty() {
-                prop_assert_eq!(
-                    stats.min_value,
-                    ScalarValue::new_primitive::<F>(Some(F::Native::neg_infinity()), &F::DATA_TYPE)
-                        .unwrap()
-                );
-                prop_assert_eq!(
-                    stats.max_value,
-                    ScalarValue::new_primitive::<F>(Some(F::Native::infinity()), &F::DATA_TYPE)
-                        .unwrap()
-                );
+                prop_assert_eq!(stats.min_value, ScalarValue::from(F::Native::neg_infinity()));
+                prop_assert_eq!(stats.max_value, ScalarValue::from(F::Native::infinity()));
             }
 
             Ok(())
