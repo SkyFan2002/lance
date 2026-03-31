@@ -158,7 +158,7 @@ impl JsonArray {
     }
 }
 
-impl Array for JsonArray {
+unsafe impl Array for JsonArray {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

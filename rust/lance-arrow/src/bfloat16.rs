@@ -112,7 +112,7 @@ impl ArrayAccessor for &BFloat16Array {
     }
 }
 
-impl Array for BFloat16Array {
+unsafe impl Array for BFloat16Array {
     fn as_any(&self) -> &dyn std::any::Any {
         self.inner.as_any()
     }
